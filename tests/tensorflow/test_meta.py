@@ -401,3 +401,25 @@ def test_metatize():
 
     with pytest.raises(ValueError):
         mt(CustomClass())
+
+
+@pytest.mark.usefixtures("run_with_tensorflow")
+@run_in_graph_mode
+def test_metatize_function():
+
+    # A_tf = tf.convert_to_tensor(np.c_[[1, 2], [3, 4]])
+    A_tf = tf.compat.v1.placeholder(tf.float64, name='A',
+                                    shape=tf.TensorShape([None, None]))
+
+    A_shape_tf = tf.shape(A_tf)
+    A_rows_tf = A_shape_tf[0]
+    I_A_tf = tf.eye(A_rows_tf)
+
+    # A_mt = mt(A_tf)
+    # A_shape_mt = mt.shape(A_mt)
+    # A_rows_tf = mt.StridedSlice(A_shape_mt, 0, 1, 1, shrink_axis_mask=1)
+    A_rows_mt = mt(A_rows_tf)
+
+    eye_mt = mt.metatize_tf_function(tf.eye, A_rows_mt)
+
+    assert mt(I_A_tf) == eye_mt
