@@ -48,6 +48,12 @@ from ..utils import HashableNDArray
 tf_metatize_cache = Cache(50)
 
 
+class DefaultTensorName(str):
+    """A type used to indicate a default tensor name."""
+
+    pass
+
+
 class MetaOpDefLibrary(object):
     """A singleton-like object that holds correspondences between TF Python API functions and the `OpDef`s they construct.
 
@@ -366,10 +372,16 @@ class TFlowMetaNodeDef(TFlowMetaSymbol):
                 raise TypeError(f"Could not convert {k}")
 
     def __init__(self, op, name, attr, obj=None):
+        """Create a TF meta NodeDef.
+
+        XXX: Meta NodeDefs with `name == None` have a special meaning;
+        their names are uniquely generated.  We still consider them equal
+        (when every other property is equal, of course).
+        """
         super().__init__(obj=obj)
         self.op = metatize(op)
         assert name is not None
-        self.name = name if isvar(name) else str(name)
+        self.name = name if isvar(name) else name
 
         if not isvar(attr):
             opdef_sig, _ = op_def_lib.get_op_info(self.op)
@@ -600,6 +612,11 @@ class TFlowMetaOp(TFlowMetaSymbol):
             # An operation with this name might already exist in the graph
             #
             try:
+                # FIXME: Lame hack
+                if isinstance(self.name, DefaultTensorName):
+                    # Use a unique version of the default name.
+                    raise KeyError()
+
                 existing_op = ops.get_default_graph().get_operation_by_name(self.name)
             except KeyError:
                 #
@@ -613,7 +630,15 @@ class TFlowMetaOp(TFlowMetaSymbol):
                 # An `Operation` with this name exists, let's make sure it's
                 # equivalent to this meta `Operation`
                 #
-                if self != mt(existing_op):
+                existing_op_mt = mt(existing_op)
+
+                # # Since we can't exactly reproduce all NodeDef.attr information
+                # # (e.g. dtypes), we need to remove any unnecessary NodeDef.attr
+                # # fields from comparisons with same-named nodes in the graph.
+                # if op_attrs.keys() != node_attr.keys():
+                #     existing_op_mt.node_def.attr = node_attr
+
+                if self != existing_op_mt:
                     raise MetaReificationError(
                         f"An Operation with the name {self.name}"
                         " already exists in the graph and is not"
@@ -725,40 +750,40 @@ class TFlowMetaTensor(TFlowMetaSymbol, MetaVariable):
 
     def __truediv__(self, y):
         # TODO: TF performs some dtype logic (using `dtype.base_dtype`) and casting here.
-        return mt.realdiv(self, y, name="truediv")
+        return mt.realdiv(self, y, name=DefaultTensorName("truediv"))
 
     def __rtruediv__(self, x):
         # TODO: TF performs some dtype logic (using `dtype.base_dtype`) and casting here.
-        return mt.realdiv(x, self, name="truediv")
+        return mt.realdiv(x, self, name=DefaultTensorName("truediv"))
 
     def __add__(self, y):
         # TODO: If `self.dtype == tf.dtypes.string`, use `mt.add`
-        return mt.addv2(self, y, name="add")
+        return mt.addv2(self, y, name=DefaultTensorName("add"))
 
     def __radd__(self, x):
         # TODO: If `x.dtype == tf.dtypes.string`, use `mt.add`
-        return mt.addv2(x, self, name="add")
+        return mt.addv2(x, self, name=DefaultTensorName("add"))
 
     def __sub__(self, y):
-        return mt.sub(self, y, name="sub")
+        return mt.sub(self, y, name=DefaultTensorName("sub"))
 
     def __rsub__(self, x):
-        return mt.sub(x, self, name="sub")
+        return mt.sub(x, self, name=DefaultTensorName("sub"))
 
     def __mul__(self, y):
-        return mt.mul(self, y, name="mul")
+        return mt.mul(self, y, name=DefaultTensorName("mul"))
 
     def __rmul__(self, x):
-        return mt.mul(x, self, name="mul")
+        return mt.mul(x, self, name=DefaultTensorName("mul"))
 
     def __abs__(self):
-        return mt.abs(self, name="Abs")
+        return mt.abs(self, name=DefaultTensorName("Abs"))
 
     def __pow__(self, y):
-        return mt.pow(self, y, name="pow")
+        return mt.pow(self, y, name=DefaultTensorName("pow"))
 
     def __neg__(self):
-        return mt.neg(self, name="Neg")
+        return mt.neg(self, name=DefaultTensorName("Neg"))
 
 
 class TFlowMetaTensorShape(TFlowMetaSymbol):
@@ -987,48 +1012,22 @@ class TFlowMetaOperator(TFlowMetaSymbol, MetaOp):
 
         if not op_args_unreified:
 
-            res_var = None
-            # name = op_args.get("name", None)
             #
-            # if name is not None:
-            #     #
-            #     # An operation with this name might already exist in the graph
-            #     #
+            # We create the `Operation` in the graph
             #
-            #     from tensorflow.python.framework import ops
-            #
-            #     try:
-            #         this_op = ops.get_default_graph().get_operation_by_name(name)
-            #     except KeyError:
-            #         pass
-            #     else:
-            #         # TODO: Make sure the existing `Operation` matches our arguments
-            #         assert this_op.type == self.op_def.obj.name
-            #
-            #         this_op = mt(this_op)
-            #         op_inputs, op_node_def = self.op_args_to_operation_inputs(op_args)
-            #         assert op_inputs == this_op.inputs
-            #         assert op_node_def == this_op.node_def
-            #         res_var = this_op.default_output
+            tf_out = self._apply_func(**op_args)
 
-            if res_var is None:
-                #
-                # We create the `Operation` in the graph
-                #
+            # Ensure that the original meta objects will be available
+            # for use in the `metatize` that follows
+            tf_metatize_cache.update(
+                {
+                    k: v
+                    for k, v in zip(op_args.values(), apply_arguments.values())
+                    if isinstance(k, tf.Tensor)
+                }
+            )
 
-                tf_out = self._apply_func(**op_args)
-
-                # Ensure that the original meta objects will be available
-                # for use in the `metatize` that follows
-                tf_metatize_cache.update(
-                    {
-                        k: v
-                        for k, v in zip(op_args.values(), apply_arguments.values())
-                        if isinstance(k, tf.Tensor)
-                    }
-                )
-
-                res_var = metatize(tf_out)
+            res_var = metatize(tf_out)
 
             if "names" in meta._lvar_defaults_enabled:
                 # This should also reset the NodeDef's `obj`
@@ -1073,7 +1072,8 @@ class TFlowMetaOperator(TFlowMetaSymbol, MetaOp):
             node_attr = var()
 
         if "names" not in meta._lvar_defaults_enabled:
-            op_name = apply_arguments.get("name", op_def_tf.name) or op_def_tf.name
+            default_name = DefaultTensorName(op_def_tf.name)
+            op_name = apply_arguments.get("name", default_name) or default_name
         else:
             op_name = var()
 

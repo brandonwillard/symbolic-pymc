@@ -25,6 +25,7 @@ from symbolic_pymc.tensorflow.meta import (TFlowMetaTensor,
                                            TFlowMetaOperator,
                                            MetaOpDefLibrary,
                                            MetaReificationError,
+                                           DefaultTensorName,
                                            mt)
 
 from tests.tensorflow import run_in_graph_mode
@@ -636,7 +637,7 @@ def test_global_options():
     with tf.Graph().as_default(), disable_auto_reification():
         y_mt = mt.Placeholder('float')
         assert y_mt.obj is None
-        assert y_mt.name == 'Placeholder:0'
+        assert isinstance(y_mt.op.name, DefaultTensorName)
         assert isinstance(y_mt.op.node_def.attr, dict)
 
     with tf.Graph().as_default(), enable_lvar_defaults('names', 'node_attrs'):
@@ -706,7 +707,7 @@ def test_meta_const():
 @run_in_graph_mode
 def test_meta_existing_names():
 
-    with tf.Graph().as_default():
+    with tf.Graph().as_default() as test_graph:
         one_mt = mt(1)
         assert one_mt.op.name == 'Const'
 
@@ -723,6 +724,7 @@ def test_meta_existing_names():
         # Make sure it's the first base variable we created
         assert orig_one_tf is one_tf
 
+        # FYI: This implicitly creates 'Const_1'
         two_mt = mt(2)
         two_mt.op.node_def.name = 'Const'
 
@@ -736,3 +738,16 @@ def test_meta_existing_names():
 
         with pytest.raises(MetaReificationError):
             two_mt.reify()
+
+        another_one_mt = TFlowMetaOperator('Const', None)(3, var())
+        # The following is something that would happen as a result of
+        # reification (of the lvar in the meta object, not the meta object
+        # itself).
+        another_one_mt.op.node_def.attr['dtype'] = tf.int32
+
+        assert another_one_mt.op.name == 'Const'
+        assert isinstance(another_one_mt.op.name, DefaultTensorName)
+        # We need to make sure that the reified meta object actually uses a
+        # unique name.
+        assert isinstance(another_one_mt.reify(), tf.Tensor)
+        assert another_one_mt.reify().op.name == 'Const_2'

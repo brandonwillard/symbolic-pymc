@@ -114,6 +114,7 @@ def test_etuple_term():
     # TODO FIXME: Because of the above two, this errs
     # add_lvar_et = etuplize(add_lvar_mt)
 
+
 @run_in_graph_mode
 def test_basic_unify_reify():
     # Test reification with manually constructed replacements
@@ -127,8 +128,11 @@ def test_basic_unify_reify():
 
     test_expr = mt.add(tf.constant(1, dtype=tf.float64),
                        mt.mul(tf.constant(2, dtype=tf.float64),
-                              x_l))
-    test_reify_res = reify(test_expr, {x_l: a})
+                              x_l, name=var('mul_name')),
+                       name=var('add_name'))
+    test_reify_res = reify(test_expr, {x_l: a,
+                                       var('add_name'): 'Add_10',
+                                       var('mul_name'): 'Mul_10'})
     test_base_res = test_reify_res.reify()
     assert isinstance(test_base_res, tf.Tensor)
 
@@ -141,7 +145,7 @@ def test_basic_unify_reify():
     # Simply make sure that unification succeeds
     meta_expected_res = mt(expected_res)
     s_test = unify(test_expr, meta_expected_res, {})
-    assert len(s_test) == 3
+    assert len(s_test) == 5
 
     assert reify(test_expr, s_test) == meta_expected_res
 
@@ -199,3 +203,26 @@ def test_sexp_unify_reify():
     # Now, the second, `A . y`
     assert z_dist_tf.op.inputs[1].op.inputs[0] == A
     assert z_dist_tf.op.inputs[1].op.inputs[1] == y
+
+
+@run_in_graph_mode
+@pytest.mark.xfail(strict=True)
+def test_unique_names():
+
+    first_div_mt = mt(1) / mt(2)
+
+    assert first_div_mt.op.name == 'truediv'
+    assert first_div_mt.reify().op.name
+
+    div_lv = mt.realdiv(var('b'), var('c'), name=var('name'))
+    # Unify with the TF graph, then reify
+    s = unify(first_div_mt.reify(), div_lv)
+
+    s[var('b')] = 1
+    s[var('b')] = 3
+
+    div_mt = reify(div_lv, s)
+
+    assert div_mt.op.name == 'truediv'
+    assert isinstance(div_mt.reify(), tf.Tensor)
+    assert first_div_mt.reify() != div_mt.reify()
