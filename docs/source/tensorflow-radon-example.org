@@ -119,10 +119,10 @@ def hierarchical_model(data, county_idx):
     sigma_b = yield pm.HalfCauchy(scale=1, name='sigma_beta')
 
     # Intercept for each county, distributed around group mean mu_a
-    a = yield pm.Normal(loc=mu_a, scale=sigma_a, plate=len(data.county.unique()),
+    a = yield pm.Normal(loc=mu_a, scale=sigma_a, batch_stack=len(data.county.unique()),
                         name='alpha')
     # Intercept for each county, distributed around group mean mu_a
-    b = yield pm.Normal(loc=mu_b, scale=sigma_b, plate=len(data.county.unique()),
+    b = yield pm.Normal(loc=mu_b, scale=sigma_b, batch_stack=len(data.county.unique()),
                         name='beta')
 
     # Model error
@@ -150,30 +150,39 @@ also reproduced here in [[fig:pymc4-radon-plot-energy]] and
 #+BEGIN_SRC python :results silent
 def sample(model, init_num_chains=50, num_samples=500, burn_in=500):
     init_num_chains = 50
-    pm4_trace, _ = pm.inference.sampling.sample(
+
+    untransformed_values = pm.evaluate_model(model)[1].untransformed_values.keys()
+
+    az_trace = pm.inference.sampling.sample(
         model, num_chains=init_num_chains, num_samples=10, burn_in=10, step_size=1., xla=True)
     for i in range(3):
         step_size_ = []
-        for _, x in pm4_trace.items():
+        for _, x in az_trace.posterior.items():
+
+            if x.name not in untransformed_values:
+                continue
+
             std = tf.math.reduce_std(x, axis=[0, 1])
             step_size_.append(
                 std[tf.newaxis, ...] * tf.ones([init_num_chains] + std.shape, dtype=std.dtype))
-        pm4_trace, _ = pm.inference.sampling.sample(
+        az_trace = pm.inference.sampling.sample(
             model, num_chains=init_num_chains, num_samples=10 + 10*i, burn_in=10 + 10*i,
             step_size=step_size_, xla=True)
 
     num_chains = 5
     step_size_ = []
-    for _, x in pm4_trace.items():
+    for _, x in az_trace.posterior.items():
+
+        if x.name not in untransformed_values:
+            continue
+
         std = tf.math.reduce_std(x, axis=[0, 1])
         step_size_.append(
             std[tf.newaxis, ...] * tf.ones([num_chains]+std.shape, dtype=std.dtype))
 
-    pm4_trace, sample_stat = pm.inference.sampling.sample(
+    az_trace = pm.inference.sampling.sample(
         model, num_chains=num_chains, num_samples=num_samples, burn_in=burn_in,
         step_size=step_size_, xla=True)
-
-    az_trace = pm.inference.utils.trace_to_arviz(pm4_trace, sample_stat)
 
     return az_trace
 #+END_SRC
@@ -275,7 +284,7 @@ for the parameters.
 state = None
 observed = None
 
-logpfn, init, _, det_names = pm.inference.sampling.build_logp_and_deterministic_functions(
+logpfn, init, _, det_names, _ = pm.inference.sampling.build_logp_and_deterministic_functions(
     model, observed=observed, state=state)
 #+END_SRC
 
@@ -295,7 +304,7 @@ with the desired src_python[:eval never]{FuncGraph}.
 
 #+NAME: fgraph-specializations
 #+BEGIN_SRC python :results silent
-logpfn_cf = logpfn.get_concrete_function(*init.values())
+logpfn_cf = logpfn.get_concrete_function(*[tf.TensorSpec(v.shape, v.dtype, name=k) for k, v in init.items()])
 logpfn_fg = logpfn_cf.graph
 #+END_SRC
 
@@ -455,7 +464,7 @@ Tensor(Sub):0,	dtype=float32,	shape=[None],	"Normal_1/log_prob/sub:0"
 |  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[None],	"mu:0"
 |  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[None],	"tau:0"
 |  Tensor(AddV2):0,	dtype=float32,	shape=[None],	"Normal_1/log_prob/add:0"
-|  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Normal_1/log_prob/add/x:0"
+|  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Normal_1/log_prob/Const:0"
 |  |  |  0.9189385
 |  |  Tensor(Log):0,	dtype=float32,	shape=[None],	"Normal_1/log_prob/Log:0"
 |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[None],	"tau:0"
@@ -490,20 +499,20 @@ for t in square_diff_outs:
 #+RESULTS: show-squared-diff-terms
 #+begin_SRC text :eval never
 Tensor(GatherV2):0,	dtype=float32,	shape=[919],	"GatherV2:0"
-|  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"values_0:0"
+|  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"hierarchical_model/alpha:0"
 |  Tensor(Const):0,	dtype=int32,	shape=[919],	"GatherV2/indices:0"
 |  |  [ 0  0  0 ... 83 84 84]
 |  Tensor(Const):0,	dtype=int32,	shape=[],	"GatherV2/axis:0"
 |  |  0
 Tensor(GatherV2):0,	dtype=float32,	shape=[919],	"GatherV2_1:0"
-|  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"values_6:0"
+|  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"hierarchical_model/beta:0"
 |  Tensor(Const):0,	dtype=int32,	shape=[919],	"GatherV2_1/indices:0"
 |  |  [ 0  0  0 ... 83 84 84]
 |  Tensor(Const):0,	dtype=int32,	shape=[],	"GatherV2_1/axis:0"
 |  |  0
 Tensor(SquaredDifference):0,	dtype=float32,	shape=[],	"Normal_5/log_prob/SquaredDifference:0"
 |  Tensor(RealDiv):0,	dtype=float32,	shape=[],	"Normal_5/log_prob/truediv:0"
-|  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"values_1:0"
+|  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"hierarchical_model/mu_alpha:0"
 |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Normal/scale:0"
 |  |  |  1.
 |  Tensor(RealDiv):0,	dtype=float32,	shape=[],	"Normal_5/log_prob/truediv_1:0"
@@ -513,7 +522,7 @@ Tensor(SquaredDifference):0,	dtype=float32,	shape=[],	"Normal_5/log_prob/Squared
 |  |  |  1.
 Tensor(SquaredDifference):0,	dtype=float32,	shape=[],	"Normal_1_1/log_prob/SquaredDifference:0"
 |  Tensor(RealDiv):0,	dtype=float32,	shape=[],	"Normal_1_1/log_prob/truediv:0"
-|  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"values_3:0"
+|  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"hierarchical_model/mu_beta:0"
 |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Normal_1/scale:0"
 |  |  |  1.
 |  Tensor(RealDiv):0,	dtype=float32,	shape=[],	"Normal_1_1/log_prob/truediv_1:0"
@@ -521,53 +530,57 @@ Tensor(SquaredDifference):0,	dtype=float32,	shape=[],	"Normal_1_1/log_prob/Squar
 |  |  |  0.
 |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Normal_1/scale:0"
 |  |  |  1.
-Tensor(SquaredDifference):0,	dtype=float32,	shape=[85],	"SampleNormal_2_1/log_prob/Normal_2/log_prob/SquaredDifference:0"
-|  Tensor(RealDiv):0,	dtype=float32,	shape=[85],	"SampleNormal_2_1/log_prob/Normal_2/log_prob/truediv:0"
-|  |  Tensor(Transpose):0,	dtype=float32,	shape=[85],	"SampleNormal_2_1/log_prob/transpose:0"
-|  |  |  Tensor(Reshape):0,	dtype=float32,	shape=[85],	"SampleNormal_2_1/log_prob/Reshape:0"
-|  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"values_0:0"
-|  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[1],	"SampleNormal_2_1/log_prob/Reshape/shape:0"
+Tensor(SquaredDifference):0,	dtype=float32,	shape=[85],	"BatchStackerNormal_2_1/log_prob/Normal_2/log_prob/SquaredDifference:0"
+|  Tensor(RealDiv):0,	dtype=float32,	shape=[85],	"BatchStackerNormal_2_1/log_prob/Normal_2/log_prob/truediv:0"
+|  |  Tensor(Reshape):0,	dtype=float32,	shape=[85],	"BatchStackerNormal_2_1/log_prob/Reshape:0"
+|  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"hierarchical_model/alpha:0"
+|  |  |  Tensor(PadV2):0,	dtype=int32,	shape=[1],	"BatchStackerNormal_2_1/log_prob/PadV2:0"
+|  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[1],	"BatchStackerNormal_2_1/log_prob/Shape:0"
 |  |  |  |  |  [85]
-|  |  |  Tensor(Const):0,	dtype=int32,	shape=[1],	"SampleNormal_2_1/log_prob/transpose/perm:0"
-|  |  |  |  [0]
+|  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[1, 2],	"BatchStackerNormal_2_1/log_prob/PadV2/paddings:0"
+|  |  |  |  |  [[0 0]]
+|  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[],	"BatchStackerNormal_2_1/log_prob/PadV2/constant_values:0"
+|  |  |  |  |  1
 |  |  Tensor(Exp):0,	dtype=float32,	shape=[],	"exp_1/forward/Exp:0"
-|  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"values_2:0"
-|  Tensor(RealDiv):0,	dtype=float32,	shape=[],	"SampleNormal_2_1/log_prob/Normal_2/log_prob/truediv_1:0"
-|  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"values_1:0"
+|  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"hierarchical_model/__log_sigma_alpha:0"
+|  Tensor(RealDiv):0,	dtype=float32,	shape=[],	"BatchStackerNormal_2_1/log_prob/Normal_2/log_prob/truediv_1:0"
+|  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"hierarchical_model/mu_alpha:0"
 |  |  Tensor(Exp):0,	dtype=float32,	shape=[],	"exp_1/forward/Exp:0"
 |  |  |  ...
-Tensor(SquaredDifference):0,	dtype=float32,	shape=[85],	"SampleNormal_3_1/log_prob/Normal_3/log_prob/SquaredDifference:0"
-|  Tensor(RealDiv):0,	dtype=float32,	shape=[85],	"SampleNormal_3_1/log_prob/Normal_3/log_prob/truediv:0"
-|  |  Tensor(Transpose):0,	dtype=float32,	shape=[85],	"SampleNormal_3_1/log_prob/transpose:0"
-|  |  |  Tensor(Reshape):0,	dtype=float32,	shape=[85],	"SampleNormal_3_1/log_prob/Reshape:0"
-|  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"values_6:0"
-|  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[1],	"SampleNormal_3_1/log_prob/Reshape/shape:0"
+Tensor(SquaredDifference):0,	dtype=float32,	shape=[85],	"BatchStackerNormal_3_1/log_prob/Normal_3/log_prob/SquaredDifference:0"
+|  Tensor(RealDiv):0,	dtype=float32,	shape=[85],	"BatchStackerNormal_3_1/log_prob/Normal_3/log_prob/truediv:0"
+|  |  Tensor(Reshape):0,	dtype=float32,	shape=[85],	"BatchStackerNormal_3_1/log_prob/Reshape:0"
+|  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"hierarchical_model/beta:0"
+|  |  |  Tensor(PadV2):0,	dtype=int32,	shape=[1],	"BatchStackerNormal_3_1/log_prob/PadV2:0"
+|  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[1],	"BatchStackerNormal_3_1/log_prob/Shape:0"
 |  |  |  |  |  [85]
-|  |  |  Tensor(Const):0,	dtype=int32,	shape=[1],	"SampleNormal_3_1/log_prob/transpose/perm:0"
-|  |  |  |  [0]
+|  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[1, 2],	"BatchStackerNormal_3_1/log_prob/PadV2/paddings:0"
+|  |  |  |  |  [[0 0]]
+|  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[],	"BatchStackerNormal_3_1/log_prob/PadV2/constant_values:0"
+|  |  |  |  |  1
 |  |  Tensor(Exp):0,	dtype=float32,	shape=[],	"exp_2_1/forward/Exp:0"
-|  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"values_4:0"
-|  Tensor(RealDiv):0,	dtype=float32,	shape=[],	"SampleNormal_3_1/log_prob/Normal_3/log_prob/truediv_1:0"
-|  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"values_3:0"
+|  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"hierarchical_model/__log_sigma_beta:0"
+|  Tensor(RealDiv):0,	dtype=float32,	shape=[],	"BatchStackerNormal_3_1/log_prob/Normal_3/log_prob/truediv_1:0"
+|  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"hierarchical_model/mu_beta:0"
 |  |  Tensor(Exp):0,	dtype=float32,	shape=[],	"exp_2_1/forward/Exp:0"
 |  |  |  ...
 Tensor(SquaredDifference):0,	dtype=float32,	shape=[919],	"Normal_4_1/log_prob/SquaredDifference:0"
 |  Tensor(RealDiv):0,	dtype=float32,	shape=[919],	"Normal_4_1/log_prob/truediv:0"
-|  |  Tensor(Const):0,	dtype=float32,	shape=[919],	"Normal_4_1/log_prob/value:0"
+|  |  Tensor(Const):0,	dtype=float32,	shape=[919],	"value:0"
 |  |  |  [0.8329091 0.8329091 1.0986123 ... 1.6292405 1.3350011 1.0986123]
 |  |  Tensor(Exp):0,	dtype=float32,	shape=[],	"exp_3_1/forward/Exp:0"
-|  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"values_5:0"
+|  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[],	"hierarchical_model/__log_eps:0"
 |  Tensor(RealDiv):0,	dtype=float32,	shape=[919],	"Normal_4_1/log_prob/truediv_1:0"
 |  |  Tensor(AddV2):0,	dtype=float32,	shape=[919],	"add:0"
 |  |  |  Tensor(GatherV2):0,	dtype=float32,	shape=[919],	"GatherV2:0"
-|  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"values_0:0"
+|  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"hierarchical_model/alpha:0"
 |  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[919],	"GatherV2/indices:0"
 |  |  |  |  |  [ 0  0  0 ... 83 84 84]
 |  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[],	"GatherV2/axis:0"
 |  |  |  |  |  0
 |  |  |  Tensor(Mul):0,	dtype=float32,	shape=[919],	"mul:0"
 |  |  |  |  Tensor(GatherV2):0,	dtype=float32,	shape=[919],	"GatherV2_1:0"
-|  |  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"values_6:0"
+|  |  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[85],	"hierarchical_model/beta:0"
 |  |  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[919],	"GatherV2_1/indices:0"
 |  |  |  |  |  |  [ 0  0  0 ... 83 84 84]
 |  |  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[],	"GatherV2_1/axis:0"
@@ -580,35 +593,6 @@ Tensor(SquaredDifference):0,	dtype=float32,	shape=[919],	"Normal_4_1/log_prob/Sq
 
 #+end_SRC
 
-The names in the TFP graph are not based on the PyMC4 model objects, so, to make
-the graph output slightly more interpretable,
-[[model-names-to-tfp-names]] attempts to re-associate the TF and PyMC4 object names.
-
-#+NAME: model-names-to-tfp-names
-#+BEGIN_SRC python :exports both :results output :wrap "SRC python :eval never" :eval never-export
-from pprint import pprint
-
-tfp_names_to_pymc = {i.name: k for i, k in zip(logpfn_cf.structured_input_signature[0], init.keys())}
-pymc_names_to_tfp = {v: k for k, v in tfp_names_to_pymc.items()}
-
-alpha_tf = logpfn_fg.get_operation_by_name(pymc_names_to_tfp['hierarchical_model/alpha'])
-beta_tf = logpfn_fg.get_operation_by_name(pymc_names_to_tfp['hierarchical_model/beta'])
-
-pprint(tfp_names_to_pymc)
-#+END_SRC
-
-#+RESULTS: model-names-to-tfp-names
-#+begin_SRC python :eval never
-{'values_0': 'hierarchical_model/alpha',
- 'values_1': 'hierarchical_model/mu_alpha',
- 'values_2': 'hierarchical_model/__log_sigma_alpha',
- 'values_3': 'hierarchical_model/mu_beta',
- 'values_4': 'hierarchical_model/__log_sigma_beta',
- 'values_5': 'hierarchical_model/__log_eps',
- 'values_6': 'hierarchical_model/beta'}
-
-
-#+end_SRC
 
 #+BEGIN_SRC python :eval never :exports none :results silent
 from tensorflow.python.ops import op_selector
@@ -700,10 +684,10 @@ Tensor(Sub):0,	dtype=float32,	shape=[None],	"Normal_1/log_prob/sub:0"
 |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Normal_1/log_prob/mul/x:0"
 |  |  |  -0.5
 |  Tensor(AddV2):0,	dtype=float32,	shape=[None],	"Normal_1/log_prob/add:0"
+|  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Normal_1/log_prob/Const:0"
+|  |  |  0.9189385
 |  |  Tensor(Log):0,	dtype=float32,	shape=[None],	"Normal_1/log_prob/Log:0"
 |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[None],	"tau:0"
-|  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Normal_1/log_prob/add/x:0"
-|  |  |  0.9189385
 
 
 #+end_SRC
@@ -783,81 +767,6 @@ def mt_normal_log_prob(x, loc, scale):
 [[tfp-normal-log-prob]] is a function that will produce a meta graph for the
 normalized form of a TFP normal log-likelihood.
 
-#+NAME: tfp-normal-log-prob-testing
-#+BEGIN_SRC python :exports none :results silent :eval never
-def tfp_normal_log_prob(x, loc, scale):
-    log_unnormalized = -0.5 * tf.math.squared_difference(
-        x / scale, loc / scale)
-    log_normalization = 0.5 * np.log(2. * np.pi) + tf.math.log(scale)
-    return log_unnormalized - log_normalization
-
-
-tf.config.optimizer.set_experimental_options(
-    {'shape_optimizations': True,
-     'arithmetic_optimzation': True,
-     'function_optimization': True,
-     'min_graph_nodes': 0})
-
-with graph_mode(), tf.Graph().as_default() as norm_graph:
-    norm_tf = tf.compat.v1.placeholder('float')
-    loc_norm_tf = tf.compat.v1.placeholder('float')
-    scale_norm_tf = tf.compat.v1.placeholder('float')
-    normal_loglik_tf = tfp_normal_log_prob(norm_tf, loc_norm_tf, scale_norm_tf)
-    normal_loglik_tf = normalize_tf_graph(normal_loglik_tf)
-
-    std_loglik_tf = tfp_normal_log_prob(norm_tf, 0.0, 1.0)
-    std_loglik_tf = normalize_tf_graph(std_loglik_tf)
-
-
-# tf_dprint(normal_loglik_tf)
-
-from symbolic_pymc.meta import enable_lvar_defaults
-
-with graph_mode(), enable_lvar_defaults('names', 'node_attrs'), norm_graph.as_default():
-    norm_mt = var() #mt.Tensor(var(), var(), var())
-    loc_mt = var() #mt.Tensor(var(), var(), var())
-    scale_mt = var() #mt.Tensor(var(), var(), var())
-    normal_loglik_mt = mt_normal_log_prob(norm_mt, loc_mt, scale_mt)
-
-tf_dprint(normal_loglik_tf)
-tf_dprint(normal_loglik_mt)
-
-assert unify(normal_loglik_tf, normal_loglik_mt)
-
-
-with graph_mode(), enable_lvar_defaults('names', 'node_attrs'), norm_graph.as_default():
-    norm_mt = var() #mt.Tensor(var(), var(), var())
-    std_loglik_mt = mt_normal_log_prob(norm_mt, 0.0, 1.0)
-
-tf_dprint(std_loglik_tf)
-tf_dprint(std_loglik_mt)
-
-assert unify(std_loglik_tf, std_loglik_mt)
-#+END_SRC
-
-#+NAME: test-comm-normal-log-lik
-#+BEGIN_SRC python :results silent :exports none
-from kanren.assoccomm import eq_comm
-
-
-with graph_mode(), enable_lvar_defaults('names', 'node_attrs'):
-    tfp_normal_pattern_mt = mt_normal_log_prob(var(), var(), var())
-
-tf_dprint(tfp_normal_pattern_mt)
-tf_dprint(mt(normal_log_lik_opt))
-
-q_lv = var()
-
-res = run(1, q_lv, eq_comm(tfp_normal_pattern_mt, mt(normal_log_lik_opt)))
-assert res
-
-tf_dprint(tfp_normal_pattern_mt)
-tf_dprint(mt(normal_log_lik))
-
-res = run(1, q_lv, eq_comm(tfp_normal_pattern_mt, mt(normal_log_lik)))
-assert res
-#+END_SRC
-
 In [[shift-squared-subso]], we create the miniKanren goals that identify the
 aforementioned normal log-likelihood "chains" and create the
 re-centering/scaling substitutions.
@@ -888,7 +797,7 @@ def shift_squared_subso(in_graph, out_graph):
         y_loglik_pat_lv = mt_normal_log_prob(y_rshp_lv, x_lv, scale_y_lv)
 
     def y_loglik(in_g, out_g):
-        return lall(eq_comm(y_loglik_pat_lv, in_g),
+        return lall(eq_comm(in_g, y_loglik_pat_lv),
                     # This logic variable captures the *actual* subgraph that
                     # matches our pattern; we can't assume our pattern *is* the
                     # same subgraph, since we're considering commutative
@@ -963,31 +872,31 @@ def shift_squared_terms(in_obj):
     # Normalize and convert to a meta graph
     normed_in_obj = normalize_tf_graph(in_obj)
 
+    in_obj = mt(normed_in_obj)
+    out_graph_lv = var()
     with normed_in_obj.graph.as_default():
-
-        in_obj = mt(normed_in_obj)
-        out_graph_lv = var()
         res = run(1, out_graph_lv, reduceo(shift_squared_subso, in_obj, out_graph_lv))
 
-        if res:
+    if res:
 
-            def reify_res(graph_res):
-                """Reconstruct and/or reify meta object results."""
+        def reify_res(graph_res):
+            """Reconstruct and/or reify meta object results."""
+            with tf.Graph().as_default():
                 from_etuple = graph_res.eval_obj if isinstance(graph_res, ExpressionTuple) else graph_res
                 if hasattr(from_etuple, 'reify'):
                     return from_etuple.reify()
                 else:
                     return from_etuple
 
-            res = [reify_res(r) for r in res]
-        else:
-            raise Exception('Pattern not found in graph.')
+        res = [reify_res(r) for r in res]
+    else:
+        raise Exception('Pattern not found in graph.')
 
-        if len(res) == 1 and isinstance(res[0], tf.Tensor):
-            graph_res = res[0]
-            return normalize_tf_graph(graph_res)
-        else:
-            raise Exception('Results could not be fully reified to a base object.')
+    if len(res) == 1 and isinstance(res[0], tf.Tensor):
+        graph_res = res[0]
+        return normalize_tf_graph(graph_res)
+    else:
+        raise Exception('Results could not be fully reified to a base object.')
 
 #+END_SRC
 
@@ -1054,7 +963,7 @@ Tensor(AddV2):0,	dtype=float32,	shape=[None],	"add_1:0"
 |  |  |  |  |  |  0.
 |  |  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/mul/x:0"
 |  |  |  |  |  -0.5
-|  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/add/x:0"
+|  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/Const:0"
 |  |  |  |  0.9189385
 |  |  Tensor(Sub):0,	dtype=float32,	shape=[None],	"Y_1/log_prob/sub:0"
 |  |  |  Tensor(Mul):0,	dtype=float32,	shape=[None],	"Y_1/log_prob/mul:0"
@@ -1070,10 +979,10 @@ Tensor(AddV2):0,	dtype=float32,	shape=[None],	"add_1:0"
 |  |  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/mul/x:0"
 |  |  |  |  |  -0.5
 |  |  |  Tensor(AddV2):0,	dtype=float32,	shape=[None],	"Y_1/log_prob/add:0"
+|  |  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/Const:0"
+|  |  |  |  |  0.9189385
 |  |  |  |  Tensor(Log):0,	dtype=float32,	shape=[None],	"Y_1/log_prob/Log:0"
 |  |  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[None],	"tau:0"
-|  |  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/add/x:0"
-|  |  |  |  |  0.9189385
 
 
 #+end_SRC
@@ -1083,7 +992,7 @@ Tensor(AddV2):0,	dtype=float32,	shape=[None],	"add_1:0"
 
 #+NAME: non-trivial-transform-test-apply
 #+BEGIN_SRC python :exports code :results silent
-with graph_mode(), hier_norm_lik.graph.as_default():
+with graph_mode():
     test_output_res = shift_squared_terms(hier_norm_lik)
     assert test_output_res is not None
 #+END_SRC
@@ -1096,13 +1005,13 @@ tf_dprint(test_output_res)
 #+RESULTS: non-trivial-transform-test-print-graph
 #+begin_SRC text :eval never
 Tensor(AddV2):0,	dtype=float32,	shape=[None],	"add_1_1:0"
-|  Tensor(SquaredDifference):0,	dtype=float32,	shape=[None],	"SquaredDifference_5:0"
+|  Tensor(SquaredDifference):0,	dtype=float32,	shape=[None],	"SquaredDifference_3:0"
 |  |  Tensor(RealDiv):0,	dtype=float32,	shape=[None],	"Y_1/log_prob/truediv_1:0"
 |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[None],	"value_x:0"
 |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[None],	"tau:0"
 |  |  Tensor(RealDiv):0,	dtype=float32,	shape=[None],	"truediv_1:0"
 |  |  |  Tensor(AddV2):0,	dtype=float32,	shape=[None],	"AddV2:0"
-|  |  |  |  Tensor(Mul):0,	dtype=float32,	shape=[None],	"Mul_8:0"
+|  |  |  |  Tensor(Mul):0,	dtype=float32,	shape=[None],	"Mul_4:0"
 |  |  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[None],	"tau:0"
 |  |  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[None],	"value_y:0"
 |  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[None],	"value_x:0"
@@ -1119,11 +1028,11 @@ Tensor(AddV2):0,	dtype=float32,	shape=[None],	"add_1_1:0"
 |  |  |  |  |  |  0.
 |  |  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/mul/x:0"
 |  |  |  |  |  -0.5
-|  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/add/x:0"
+|  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/Const:0"
 |  |  |  |  0.9189385
-|  |  Tensor(Sub):0,	dtype=float32,	shape=[],	"sub_1_1:0"
-|  |  |  Tensor(Mul):0,	dtype=float32,	shape=[],	"mul_3_1:0"
-|  |  |  |  Tensor(SquaredDifference):0,	dtype=float32,	shape=[],	"SquaredDifference_2_1:0"
+|  |  Tensor(Sub):0,	dtype=float32,	shape=[],	"sub_2:0"
+|  |  |  Tensor(Mul):0,	dtype=float32,	shape=[],	"mul_1_1:0"
+|  |  |  |  Tensor(SquaredDifference):0,	dtype=float32,	shape=[],	"SquaredDifference_1_1:0"
 |  |  |  |  |  Tensor(Reshape):0,	dtype=float32,	shape=[],	"Reshape_1:0"
 |  |  |  |  |  |  Tensor(Placeholder):0,	dtype=float32,	shape=[None],	"value_y:0"
 |  |  |  |  |  |  Tensor(Const):0,	dtype=int32,	shape=[0],	"Reshape/shape:0"
@@ -1132,7 +1041,7 @@ Tensor(AddV2):0,	dtype=float32,	shape=[None],	"add_1_1:0"
 |  |  |  |  |  |  0.
 |  |  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/mul/x:0"
 |  |  |  |  |  -0.5
-|  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/add/x:0"
+|  |  |  Tensor(Const):0,	dtype=float32,	shape=[],	"Y_1/log_prob/Const:0"
 |  |  |  |  0.9189385
 
 
@@ -1142,16 +1051,77 @@ Tensor(AddV2):0,	dtype=float32,	shape=[None],	"add_1_1:0"
 
 Now, we're ready to apply the transform to the radon model log-likelihood graph.
 
-#+NAME: transform-logpfn
-#+BEGIN_SRC python :results silent
-with graph_mode(), tf.Graph().as_default() as trans_graph:
+#+NAME: transform-logpfn-testing
+#+BEGIN_SRC python :exports none :results silent :eval never
+from kanren.core import dbgo
+from kanren.goals import permuteo
+from kanren.graph import term_walko
+from kanren.assoccomm import commutative
+from etuples import etuplize
 
-    logpfn_fg_out = normalize_tf_graph(logpfn_fg.outputs[0])
-    logpfn_trans_tf = shift_squared_terms(logpfn_fg_out)
+
+def eq_comm_dbg(u, v):
+
+    def permuteo_unique(x, y, op, **kwargs):
+        return lall(
+            # dbgo(x, y, op, msg='permuteo_unique: before permuteo'),
+            permuteo(x, y, no_ident=True, default_ConsNull=etuple),
+            # dbgo(x, y, op, msg='permuteo_unique: after permuteo'),
+        )
+
+    return term_walko(commutative, permuteo_unique, u, v)
+
+
+def shift_squared_test(in_graph, out_graph):
+
+    y_lv = var()
+    x_lv = var()
+    mu_x_lv = var()
+    scale_y_lv = var()
+
+    # TFP (or PyMC4) applies a reshape to the log-likelihood values, so
+    # we need to anticipate that.  If we wanted, we could consider this
+    # detail as just another possibility (and not a requirement) by using a
+    # `conde` goal.
+    y_rshp_lv = mt.reshape(y_lv, var(), name=var())
+    y_loglik_lv = var()
+
+    # Create a non-standard normal "pattern" graph for the "Y" term with all
+    # the unnecessary details set to logic variables
+    with enable_lvar_defaults('names', 'node_attrs'):
+        y_loglik_pat_lv = mt_normal_log_prob(y_rshp_lv, x_lv, scale_y_lv)
+
+    def y_loglik(in_g, out_g):
+        return lall(
+            dbgo(in_g, y_loglik_pat_lv, msg='y_loglik: before eq_comm'),
+            eq_comm_dbg(in_g, y_loglik_pat_lv),
+            # This logic variable captures the *actual* subgraph that
+            # matches our pattern; we can't assume our pattern *is* the
+            # same subgraph, since we're considering commutative
+            # operations (i.e. our pattern might not have the same
+            # argument order as the actual subgraph, so we can't use it
+            # to search-and-replace later on).
+            # eq(in_g, y_loglik_lv),
+            dbgo(in_g, y_rshp_lv, x_lv, scale_y_lv, msg='y_loglik: after eq_comm'),
+            eq(out_g, in_g))
+
+    return lall(y_loglik(in_graph, out_graph))
+
 
 with graph_mode(), logpfn_fg_out.graph.as_default():
     out_graph_lv = var()
-    res = run(1, out_graph_lv, reduceo(shift_squared_subso, logpfn_fg_out, out_graph_lv))
+    in_graph = logpfn_fg.outputs[0]
+
+    tf_dprint(in_graph)
+    in_graph_norm = normalize_tf_graph(in_graph)
+    tf_dprint(in_graph_norm)
+
+with graph_mode(), logpfn_fg_out.graph.as_default():
+    in_graph_norm_et = etuplize(mt(in_graph_norm))
+    # tf_dprint(in_graph_norm_mt)
+    res = run(1, out_graph_lv, shift_squared_test(in_graph_norm_et, out_graph_lv))
+    # res = run(1, out_graph_lv, reduceo(shift_squared_subso, in_graph_norm, out_graph_lv))
+
     res = res[0].reify()
 
     # FIXME: commutative eq is causing us to reify ground/base sub-graphs with the wrong
@@ -1162,13 +1132,20 @@ with graph_mode(), logpfn_fg_out.graph.as_default():
 assert logpfn_trans_tf is not None
 #+END_SRC
 
+#+NAME: transform-logpfn
+#+BEGIN_SRC python :results silent
+with graph_mode(), tf.Graph().as_default() as trans_graph:
+    logpfn_trans_tf = shift_squared_terms(logpfn_fg.outputs[0])
+#+END_SRC
+
 #+NAME: simplify-transformed-logpfn
 #+BEGIN_SRC python :results silent
 with graph_mode(), logpfn_trans_tf.graph.as_default():
 
-    res = run(1, var('q'),
+    q_lv = var()
+    res = run(1, q_lv,
               reduceo(lambda x, y: walko(recenter_sqrdiffo, x, y),
-                      logpfn_trans_tf, var('q')))
+                      logpfn_trans_tf, q_lv))
 
     logpfn_trans_tf = normalize_tf_graph(res[0].eval_obj.reify())
 #+END_SRC
